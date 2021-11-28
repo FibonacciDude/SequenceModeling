@@ -5,8 +5,6 @@
     "seed": 99,
     "batch_size": 32,
 
-    "predictor" : false,
-    "rnn" : true,
     "categorical" : true,
     "label_idx" : 0,
     "label_size" : 5,

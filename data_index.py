@@ -4,8 +4,8 @@ from collections import namedtuple
 import json
 import torch
 import torch.nn.utils.rnn as rnn_utils
+import torch.nn.functional as F
 from tqdm import trange
-
 
 tasks = ["_Balura_Game", "_Fixations", "_Reading",  "_Video_1",  "_Video_2"]
 tasks_code = ["BLG", "FXS", "TEX", "VD1", "VD2"]
@@ -33,9 +33,9 @@ def permutate(n):
 	return torch.randperm(n)
 
 
-TRAIN_PERM = permutate(TRAIN)
-VAL_PERM = permutate(VAL)
-TEST_PERM = permutate(TEST)
+PERM_TRAIN= permutate(TRAIN)
+PERM_VAL = permutate(VAL)
+PERM_TEST = permutate(TEST)
 
 
 def data_index(person, dim):
@@ -74,18 +74,20 @@ def data_index(person, dim):
                 pads = []
             if (i-1) % (config['Hz'] // config['second_split']) == 0:
                 flag = (row[1] == 'NaN' or row[2] == 'NaN')
-                vecs.append(np.array([float(row[1]), float(row[2]), flag]))
-                arr = np.array([0]*(info.feature_size-1)+[info.feature_size]) if flag else np.ones(info.feature_size)
+                arr = np.array([0, 0, flag]) if flag else np.array([float(row[1]), float(row[2]), flag])
+                vecs.append(arr)
+                arr2 = np.array([0]*(info.feature_size-1)+[info.feature_size]) if flag else np.ones(info.feature_size)
 		# the info.feature_size instead of 1 is to rescale and give it equal "weight"
-                pads.append(arr)
+                pads.append(arr2)
+
     pos=np.stack(pos)
     mask=np.stack(mask)
-    return pos, mask, [tasks[dim//2]]  # pos + label/s
+    label=np.array([tasks[dim//2]]) # this case, only 1 label (task). Raw (not onehot for categorical)
+    return pos, mask, label
 
 def normalize(dataset, mask):
-    dat = dataset[VAL_PEOPLE+TEST_PEOPLE:, :, :, :-1] #* mask[VAL_PEOPLE+TEST_PEOPLE:, :, :, :-1]
-    dat[torch.isnan(dat)] = 0.0
-    N = mask.sum() / (info.feature_size-1)
+    dat = dataset[VAL+TEST:, :, :, :-1]
+    N = mask.sum() / (info.feature_size-1) # not including the flag
     mean = dat.sum((0, 1, 2)) / N
     mean_ = mean[None, None, None]
     std = ((dat-mean)**2).sum((0, 1, 2)) / (N-1)
@@ -97,74 +99,89 @@ def normalize(dataset, mask):
     #dataset[:, :, :, :-1] *= 2 # scaling factor as std may push the values too low
     return dataset
 
+def torchize(x, device="cuda"):
+    return torch.as_tensor(x, device = torch.device(device), dtype = torch.float32)
 
 def get_dataset(device = "cuda"):
     # dataset = torch.empty((info.people_dim, info.dimension_size, ))
     dataset=[]
     mask=[]
     lens=[]
+    labels=[]
     global info
     for idx in trange(info.people_size*info.dimension_size):
         # make the indexing work as the thing is flipped?
-        pp, dim = idx % info.people_size, idx // info.people_size
-        pos, mm, labels=data_index(pp, dim)
-        pos=torch.as_tensor(pos, device = torch.device(device), dtype = torch.float32)
-        mm=torch.as_tensor(mm, device = torch.device(device), dtype = torch.float32)
+        #pp, dim = idx % info.people_size, idx // info.people_size
+        pp, dim = idx // info.dimension_size, idx % info.dimension_size
+        pos, mm, label=data_index(pp, dim)
+        pos=torchize(pos, device=device)
+        mm=torchize(mm, device=device)
         dataset.append(pos)
         mask.append(mm)
         lens.append(pos.size()[0])
+        labels.append(label)
 
     dataset=rnn_utils.pad_sequence(dataset, batch_first=True)
     mask=rnn_utils.pad_sequence(mask, batch_first=True)
+    lens=torchize(lens, device=device)
+    labels=np.array(labels)
     print("Dataset tensor size:", dataset.size())
     if config['norm']:
         dataset=normalize(dataset, mask)
-    return dataset, mask
+    dataset[torch.isnan(dataset)] = 0.0
+    return dataset, mask, lens, labels
 
 
-def get_batch(i, dataset, mask, type = 0, last = False):
+def get_batch(i, dataset, mask, lens, labels, type = 0, device="cuda"):
     # 0 -> train, 1 -> val, 2 -> test
     # get batch, as a packed padded sequence
 
     if type == 0:
-        start=VAL + TEST
+        start=VAL+TEST
         end=n
-        size=n - VAL - TEST
+        size=TRAIN
+        perm=PERM_TRAIN
     elif type == 1:
         start=TEST
-        end=TEST + VAL
+        end=TEST+VAL
         size=VAL
+        perm=PERM_VAL
     else:
         start=0
         end=TEST
         size=TEST
+        perm=PERM_TEST
 
-    lens=[]
+    last = ((i+1)*config['batch_size']) > end
     if last:
-        idxs=PERM[end-(size % batch_size):end]
+        idxs=perm[-(size % batch_size):]
     else:
-        idxs=PERM[start*(i+1):start*(i+1)+config['batch_size']]
-    batch=[]
-    for idx in idxs:
-        dat=dataset[idx//info.people_size, idx % info.people_size]
-        batch.append(dat)
-        lens.append(dat.size()[0])
-    batch=rnn_utils.pad_sequence(batch, batch_first = True)
-    # update mask with pad
-    mask=rnn_utils.pad_sequence(mask, batch_first = True)
-
+        idxs=perm[i*config['batch_size']:(i+1)*config['batch_size']]
+ 
+    batch_lens = lens[idxs].cpu().numpy()
+    max_ = int(max(batch_lens))
+    # did this work with the VAL+TEST??? how?
+    dat = dataset[start:, ...]
+    mk = mask[start:, ...]
+    labels = labels[start:, config['label_idx']]    # get the right label for predicting
+    batch = dat[idxs][:, :max_, :]
+    batch_mask = mk[idxs][:, :max_, :]
+    labels = torchize(labels, device=device)
+    batch_labels = labels[idxs]
+    if config["categorical"]:
+        batch_labels=F.one_hot(batch_labels.view(-1), num_classes=config["label_size"])
     # randomly permute the train batches at the end of an epoch
     if last:
-        sum_=TEST+VAL
-        PERM[sum_:]=PERM[sum_:][torch.randperm(n-sum_)]
-
-    return batch, mask, lens
+        TRAIN_PERM = permutate(TRAIN)
+    return batch, batch_mask, batch_lens, batch_labels
 
 if __name__ == "__main__":
     print("Fetching dataset...")
-    dataset, data_mask = get_dataset()
+    dataset, data_mask, lens, labels = get_dataset()
     print("Dataset fetched...")
     print("Saving to file...")
     torch.save(dataset, "data/dataset.pt")
-    torch.save(dataset, "data/data_mask.pt")
+    torch.save(data_mask, "data/data_mask.pt")
+    torch.save(lens, "data/lens.pt")
+    torch.save(labels, "data/labels.npy")
     print("Dataset saved...")
