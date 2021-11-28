@@ -16,7 +16,6 @@ import tqdm
 from models import *
 
 info = data_index.info
-x_size = info.feature_size*config["second_split"]
 
 def add_noise(X):
     dat = X[..., :-1]
@@ -24,17 +23,29 @@ def add_noise(X):
     #X = X
     return X
 
-def loop(model, optimizer, scheduler, dataset, data_mask, data_lens, TOT, type_=0, update=True):
+def loop(f_model, pred_model, optimizer, scheduler, data_tup, TOT, type_=0, update=True):
+    predictor=config["predictor"] # predicting?
+    loss_calc = loss_calc_y if predictor else loss_calc_x
     losses = []
+    dataset, data_mask, data_lens, data_labels = data_tup
+    #model = pred_model if predictor else f_model
     for batch_idx in range(TOT):
-        batch, mask, lens = get_batch(
-            batch_idx, dataset, data_mask, data_lens, type=type_, last=False)
+        batch, mask, lens, labels  = get_batch(
+            batch_idx, dataset, data_mask, data_lens, data_labels, type=type_)
         if update:
             batch = add_noise(batch)
-        Y_hat = model(batch, lens)
-        loss = loss_calc(batch, Y_hat, mask, config)
 
+        if predictor:
+            batch=f_model(batch, lens).detach()
+            Y_hat=pred_model(batch)
+            Y=labels
+        else:
+            Y_hat=f_model(batch, lens)
+            Y=batch
+
+        loss = loss_calc(Y, Y_hat, mask, config)
         losses.append(loss.item() * Y_hat.size()[0] / config["batch_size"])
+
         if batch_idx % config["print_every"] == 0 and type_==0 and (config["print_every"] <= TOT):
             # output the loss and stuff, all pretty
             print("\t\ttrain loss (%d): %.4f" % (batch_idx, loss.item()))
@@ -44,36 +55,24 @@ def loop(model, optimizer, scheduler, dataset, data_mask, data_lens, TOT, type_=
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config["max_norm"])
+            torch.nn.utils.clip_grad_norm_((pred_model if predictor else f_model).parameters(), config["max_norm"])
    
     if update:
         scheduler.step()
     return np.array(losses)
 
-def train_sequence_model(model, optimizer, scheduler, dataset, data_mask, data_lens, epochs):
-
+def train_model(f_model, pred_model, optimizer, scheduler, data_tup):
     TOT = math.ceil(data_index.TRAIN / config["batch_size"])
-    #summary(model, (config["batch_size"], 100, info.feature_size * config["second_split"]))
-    summary(model, "rnn" if config["rnn"] else "baseline")
-    #plot_train = []
-    #plot_val = []
-    for e in tqdm.trange(epochs):
-        # loop through batches
-        #print("Epoch %d" % e)
-        losses = loop(model, optimizer, scheduler, dataset, data_mask, data_lens, TOT=TOT, type_=0, update=True)
-
+    #summary(pred_model if config["predictor"] else f_model, "pred" if config["predictor"]  else ("rnn" if config["rnn"] else "baseline"))
+    for e in tqdm.trange(config["epochs"]):
+        losses = loop(f_model, pred_model, optimizer, scheduler, data_tup, TOT=TOT, type_=0, update=True)
         #print("Epoch %d over, average loss" % e, losses.mean())
         #val_losses = validate(model, dataset, data_mask, data_lens, final=True)
         #print("\t\tVal loss: %.4f" % (val_losses.mean()))
 
-        #plot_val.append(val_losses.mean()) 
-        #plot_train.append(losses.mean()) 
-    #return plot_train, plot_val
-
-def validate(model, dataset, data_mask, data_lens, final=False):
+def validate(f_model, pred_model, data_tup, final=False):
     TOT = (data_index.VAL // config["batch_size"])
-    losses = loop(model, None, None, dataset, data_mask, data_lens, TOT=TOT, type_=1, update=False)
-
+    losses = loop(f_model, pred_model, None, None, data_tup, TOT=TOT, type_=1, update=False) # no optim or schedule
     if final:
         print("Final validation")
         print("\tMean validation loss:", losses.mean())
@@ -85,26 +84,39 @@ print("loading dataset...")
 dataset = torch.load("data/dataset.pt")
 data_mask = torch.load("data/data_mask.pt")
 # take out the mask for the None loss
-#data_mask[data_mask==info.feature_size] = 0
 data_mask[..., :-1] = 0
+data_lens = torch.load("data/lens.pt")
+data_labels = torch.load("data/labels.npy")
+# tuple with everything
+data_tup = (dataset, data_mask, data_lens, data_labels)
 
-lens = torch.load("data/lens.pt")
 print("dataset loaded...")
 
-def main():
-    epochs = config["epochs"]
+def run():
 
-    model = Rnn(config) if config["rnn"] else Baseline(config)
-    optimizer = optim.Adam(model.parameters(), lr=config["lr"], weight_decay=config["l2_reg"])
+    predictor=config["predictor"]
+    mode = "pred" if predictor else "no_pred"
+    f_model= Rnn(config, mode=mode) if config["rnn"] else Baseline(config, mode=mode)
+
+    if predictor:
+        pred_model=Predictor(config)
+        f_model.load_state_dict(torch.load("best_models/" + config["checkpoint_dir_f"]))
+        optimizer=optim.Adam(pred_model.parameters(), lr=config["lr"], weight_decay=config["l2_reg"])
+    else:
+        pred_model=None
+        optimizer=optim.Adam(f_model.parameters(), lr=config["lr"], weight_decay=config["l2_reg"])
+    
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config["step_size"], gamma=config["gamma"])
+    train_model(f_model, pred_model, optimizer, scheduler, data_tup)
 
     #if load and os.path.exists("checkpoints/" + config["checkpoint_dir"]):
     #    rnn.load("checkpoints/" + config["checkpoint_dir"])
-    if config["predictor"]:
-    train_sequence_model(model, optimizer, scheduler, dataset, data_mask, lens, epochs)
-    losses = validate(model, dataset, data_mask, lens, final=True)
-    torch.save(model.state_dict(), "checkpoints/" + config["checkpoint_dir"])
-    with open("crossval/"+config["checkpoint_dir"][:-2]+"txt", "w") as f:
+    
+    model = pred_model if predictor else f_model
+    losses = validate(model, pred_model, data_tup, final=True)
+    dir_type = "p" if predictor else "f"
+    torch.save(model.state_dict(), "checkpoints/" + config["checkpoint_dir_"+dir_type])
+    with open("crossval/"+config["checkpoint_dir_"+dir_type][:-2]+"txt", "w") as f:
         f.write(str(losses.mean()))
 
 
@@ -123,44 +135,56 @@ if __name__ == "__main__":
     inside_layers = [0, 1] # for feedforward in lstm
     num_layers = [1, 2] # for lstm
 
-    # baseline / error
-    #baseline_or_error = True
-    rnn = False
-    predictor = False
-    baseline_hidden_size = [32, 64] # baseline (or error)
-    baseline_depth = [2, 4, 6] # baseline depth (or errork)
+    baseline_hidden_size = [32, 64] # baseline (or error) (this should be greater than hidden_size lstm)
+    baseline_depth = [2, 4, 6] # baseline depth (or error), doesn't include bottleneck
+    predictor_hidden_size = [32, 64] # predictor
+    predictor_depth = [4, 6] # predictor
+    error_hidden_size = [32, 64]
+    error_depth = [4, 6]
 
     iter_dict = {
     #"num_layers" : num_layers, 
     #"inside_layers" : inside_layers,
     "baseline_hidden_size" : baseline_hidden_size,
-    #"proj_hidden_size" : proj_hidden_size,
     "baseline_depth" : baseline_depth,
+    #"predictor_hidden_size" : predictor_hidden_size,
+    #"predictor_depth" : predictor_depth,
+    #"error_hidden_size" : error_hidden_size,
+    #"error_depth" : error_depth,
+    #"proj_hidden_size" : proj_hidden_size, # for lstm feedforward
     "l2_reg" : l2_reg,
     #"hidden_size" : hidden_size,
     "lr" : lr
     }
 
-    #iter_arr = [num_layers, inside_layers, error_hidden_size, proj_hidden_size, l2_reg, hidden_size, lr]
     iter_arr = list(iter_dict.values())
     config_dict = json.load(open("config.json"))
+    rnn = True
+    predictor = False
+    epochs = 4
     config_dict["rnn"] = rnn
     config_dict["predictor"] = predictor
-    #config = json.load(open("config_val_" + "rnn" if rnn else "baseline"+ ".json"))
-    #main()
+    config_dict["epochs"] = epochs 
+
+    checkpoint_append = info.name + "_" + ("predictor") if predictor else ("rnn" if rnn else "baseline")
+    dir_type="p" if predictor else "f"
     x_size = info.feature_size * config_dict["second_split"]
     
     #"""
     #config = json.load(open("config_net.json"))
     for idx, params in enumerate(itertools.product(*iter_arr)):
+        if idx > 0:
+            break
         print("Currently:")
         #print(list(iter_dict.keys()))
         for i, (k, v) in enumerate(iter_dict.items()):
             #print(params)
             config_dict[k] = params[i]
             print("{}: {}".format(k, params[i]))
-        config_dict["checkpoint_dir"] = "gazebase_" + "rnn" if rnn else "baseline" + "_%d.pt" % idx
-        config = config_dict 
+        config_dict["checkpoint_dir_"+dir_type] = checkpoint_append + "_%d.pt" % idx
+        config = config_dict
         torch.manual_seed(config['seed'])
-        main() 
+        with open('config_val.json', 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
+        run() 
    #"""

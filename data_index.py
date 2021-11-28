@@ -10,10 +10,10 @@ from tqdm import trange
 tasks = ["_Balura_Game", "_Fixations", "_Reading",  "_Video_1",  "_Video_2"]
 tasks_code = ["BLG", "FXS", "TEX", "VD1", "VD2"]
 
-DataInfo = namedtuple("DataInfo", ["dimension_size", "people_size", "feature_size"])
+DataInfo = namedtuple("DataInfo", ["dimension_size", "people_size", "feature_size", "name"])
 exceptions = np.array([ 28,  36,  50,  56,  75,  82, 104, 105, 112, 124, 160, 205, 324])
 amt_people = 335
-info = DataInfo(dimension_size=2*len(tasks), people_size=amt_people-(exceptions<=amt_people).sum(), feature_size=3)
+info = DataInfo(dimension_size=2*len(tasks), people_size=amt_people-(exceptions<=amt_people).sum(), feature_size=3, name="gazebase")
 
 print("Dataset info:", info)
 config = json.load(open("config.json"))
@@ -82,7 +82,8 @@ def data_index(person, dim):
 
     pos=np.stack(pos)
     mask=np.stack(mask)
-    label=np.array([tasks[dim//2]]) # this case, only 1 label (task). Raw (not onehot for categorical)
+    # from tasks take
+    label=np.array([int(dim//2)]) # this case, only 1 label (task). Raw (not onehot for categorical)
     return pos, mask, label
 
 def normalize(dataset, mask):
@@ -166,7 +167,7 @@ def get_batch(i, dataset, mask, lens, labels, type = 0, device="cuda"):
     labels = labels[start:, config['label_idx']]    # get the right label for predicting
     batch = dat[idxs][:, :max_, :]
     batch_mask = mk[idxs][:, :max_, :]
-    labels = torchize(labels, device=device)
+    labels = torchize(labels, device=device).long()
     batch_labels = labels[idxs]
     if config["categorical"]:
         batch_labels=F.one_hot(batch_labels.view(-1), num_classes=config["label_size"])

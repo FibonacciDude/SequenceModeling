@@ -6,7 +6,8 @@
     "batch_size": 32,
 
     "predictor" : false,
-    "rnn" : true,
+    "rnn" : false,
+
     "categorical" : true,
     "label_idx" : 0,
     "label_size" : 5,
@@ -21,10 +22,10 @@
     "loss_factor": 4,
 
     "lr": 0.012589254117941675,
-    "hidden_size": 64,
+    "hidden_size": 32,
     "l2_reg": 0.01,
     "num_layers": 2,
-    "inside_layers": 1,
+    "inside_layers": 128,
     "proj_hidden_size": 64,
 
 
@@ -35,5 +36,6 @@
     "error_depth" : 2,
     "baseline_depth" : 6,
 
-    "checkpoint_dir": "gazebase_rnn_159_val.pt"
+    "checkpoint_dir_f": "gazebase_test_best.pt",
+    "checkpoint_dir_p": "gazebase_test_pred.pt"
 }

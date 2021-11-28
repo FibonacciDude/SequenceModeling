@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.utils.rnn as rnn_utils
 import data_index
 
 info = data_index.info
-x_size = info.feature_size*config["second_split"]
 
-def loss_calc(X, Y_hat, mask, config):
+def loss_calc_x(X, Y_hat, mask, config):
     batch_size, seq_len, ss, fs = X.size()
     X = X.reshape(batch_size, seq_len, ss*fs)
     Y_hat = Y_hat[:, :-1, :]  # 0, 1, ..., last-1
@@ -20,10 +20,15 @@ def loss_calc(X, Y_hat, mask, config):
     loss = loss.sum()  / mask.sum() * (ss * fs) * config["loss_factor"]
     return loss
 
+def loss_calc_y(Y, Y_hat, mask, config):
+    crit = nn.CrossEntropyLoss(weight=None)
+    loss = crit(Y, Y_hat)
+    return loss
+
 class FeedForward(nn.Module):
     def __init__(self, h, d, in_, out_, device="cuda"):
         super(FeedForward, self).__init__()
-        layers = [nn.Linear(in_, h), nn.ReLU()] + [nn.Linear(h, h), nn.ReLU()] * d + [h, out_]
+        layers = [nn.Linear(in_, h), nn.ReLU()] + [nn.Linear(h, h), nn.ReLU()] * d + [nn.Linear(h, out_)]
         self.net = nn.Sequential(*layers)
         self.to(torch.device(device))
     def forward(self, X):
@@ -39,14 +44,25 @@ class Predictor(nn.Module):
         return self.net(X)
 
 class Baseline(nn.Module):
-    def __init__(self, config, device="cuda"):
+    def __init__(self, config, mode="no_pred", device="cuda"):
         super(Baseline, self).__init__()
-        self.net = FeedForward(config["baseline_hidden_size"], config["baseline_depth"], x_size, label_size)
+        bhs = config["baseline_hidden_size"]
+        self.x_size=info.feature_size*config["second_split"]
+        self.l1 = FeedForward(bhs, config["baseline_depth"], self.x_size, bhs)
+        btl = [nn.ReLU(), nn.Linear(bhs, config["hidden_size"])]
+        self.bottleneck = nn.Sequential(*btl)
+        self.l2 = nn.Sequential(nn.Linear(config["hidden_size"], self.x_size))
         self.to(torch.device(device))
+        self.mode=mode
+
     def forward(self, X, lens):
         batch_size, seq_len, ss, fs = X.size()
         X = X.reshape(batch_size*seq_len, ss*fs)
-        out = self.net(X)
+        out = self.l1(X)
+        out = self.bottleneck(out)
+        if self.mode == "pred":
+            return out.detach()
+        out = self.l2(out)
         out = out.reshape(batch_size, seq_len, ss, fs)
         return out
 
@@ -64,7 +80,7 @@ class Error(nn.Module):
 
 class Rnn(nn.Module):
     # add self-correcting module later as another nn.Module
-    def __init__(self, config, device="cuda"):
+    def __init__(self, config, mode="no_pred", device="cuda"):
         super(Rnn, self).__init__()
         self.x_size = info.feature_size * config["second_split"]
         # proj size = hidden size
@@ -78,6 +94,7 @@ class Rnn(nn.Module):
                       info.feature_size * config["second_split"])
         )
         self.to(torch.device(device))
+        self.mode=mode
 
     def forward(self, X, lens):
         # this forward goes through the entire length of the input and spits out all the predictions as output
@@ -88,6 +105,8 @@ class Rnn(nn.Module):
         out, self.hidden = self.rnn(packed_X)
         #unpack
         out, _ = rnn_utils.pad_packed_sequence(out, batch_first=True)
+        if self.mode == "pred":
+            return out.detach() # reshape after this
         #project
         out = self.proj_net(out)
         out = out.contiguous()
