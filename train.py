@@ -28,7 +28,8 @@ def loop(f_model, pred_model, optimizer, scheduler, data_tup, TOT, type_=0, upda
     loss_calc = loss_calc_y if predictor else loss_calc_x
     losses = []
     dataset, data_mask, data_lens, data_labels = data_tup
-    #model = pred_model if predictor else f_model
+    model = pred_model if predictor else f_model
+
     for batch_idx in range(TOT):
         batch, mask, lens, labels  = get_batch(
             batch_idx, dataset, data_mask, data_lens, data_labels, type=type_)
@@ -37,7 +38,7 @@ def loop(f_model, pred_model, optimizer, scheduler, data_tup, TOT, type_=0, upda
 
         if predictor:
             batch=f_model(batch, lens).detach()
-            Y_hat=pred_model(batch)
+            Y_hat=pred_model(batch.view(batch.size()[0], -1))
             Y=labels
         else:
             Y_hat=f_model(batch, lens)
@@ -55,7 +56,7 @@ def loop(f_model, pred_model, optimizer, scheduler, data_tup, TOT, type_=0, upda
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            torch.nn.utils.clip_grad_norm_((pred_model if predictor else f_model).parameters(), config["max_norm"])
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config["max_norm"])
    
     if update:
         scheduler.step()
@@ -145,8 +146,8 @@ if __name__ == "__main__":
     iter_dict = {
     #"num_layers" : num_layers, 
     #"inside_layers" : inside_layers,
-    "baseline_hidden_size" : baseline_hidden_size,
-    "baseline_depth" : baseline_depth,
+    #"baseline_hidden_size" : baseline_hidden_size,
+    #"baseline_depth" : baseline_depth,
     #"predictor_hidden_size" : predictor_hidden_size,
     #"predictor_depth" : predictor_depth,
     #"error_hidden_size" : error_hidden_size,
@@ -158,33 +159,41 @@ if __name__ == "__main__":
     }
 
     iter_arr = list(iter_dict.values())
-    config_dict = json.load(open("config.json"))
+    config_file = "config.json"
+    config_dict = json.load(open(config_file))
     rnn = True
-    predictor = False
+    predictor = True
     epochs = 4
     config_dict["rnn"] = rnn
     config_dict["predictor"] = predictor
     config_dict["epochs"] = epochs 
+    config_dict["print_every"] = 10_000
 
-    checkpoint_append = info.name + "_" + ("predictor") if predictor else ("rnn" if rnn else "baseline")
+    checkpoint_append = info.name + "_" + (("predictor") if predictor else ("rnn" if rnn else "baseline"))
     dir_type="p" if predictor else "f"
     x_size = info.feature_size * config_dict["second_split"]
     
-    #"""
-    #config = json.load(open("config_net.json"))
     for idx, params in enumerate(itertools.product(*iter_arr)):
         if idx > 0:
             break
         print("Currently:")
-        #print(list(iter_dict.keys()))
         for i, (k, v) in enumerate(iter_dict.items()):
-            #print(params)
             config_dict[k] = params[i]
             print("{}: {}".format(k, params[i]))
+
         config_dict["checkpoint_dir_"+dir_type] = checkpoint_append + "_%d.pt" % idx
+        #with open("config_val_test.json", 'w', encoding='utf-8') as f: # dump when f
+        #    json.dump(config_dict, f, ensure_ascii=False, indent=4)
+        config_dict = json.load(open(config_file)) # read when pred
+
+        config_dict["rnn"] = rnn
+        config_dict["predictor"] = predictor
+        config_dict["epochs"] = epochs 
+        config_dict["print_every"] = 10_000
+
         config = config_dict
+        print("dir:", config["checkpoint_dir_f"])
         torch.manual_seed(config['seed'])
-        with open('config_val.json', 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
-        run() 
-   #"""
+        run()  # run
+        # save and get best
+        #os.system("cp checkpoints/gazebase_rnn_0.pt best_models/gazebase_test.pt")

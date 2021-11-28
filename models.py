@@ -21,6 +21,9 @@ def loss_calc_x(X, Y_hat, mask, config):
     return loss
 
 def loss_calc_y(Y, Y_hat, mask, config):
+    #Y_hat = Y_hat[:, :-1, :]  # 0, 1, ..., last-1
+    #Y = Y[:, 1:, :]  # 1, 2, ..., last
+    print(Y.shape, Y_hat.shape)
     crit = nn.CrossEntropyLoss(weight=None)
     loss = crit(Y, Y_hat)
     return loss
@@ -31,6 +34,7 @@ class FeedForward(nn.Module):
         layers = [nn.Linear(in_, h), nn.ReLU()] + [nn.Linear(h, h), nn.ReLU()] * d + [nn.Linear(h, out_)]
         self.net = nn.Sequential(*layers)
         self.to(torch.device(device))
+
     def forward(self, X):
         out = self.net(X)
         return out
@@ -106,7 +110,7 @@ class Rnn(nn.Module):
         #unpack
         out, _ = rnn_utils.pad_packed_sequence(out, batch_first=True)
         if self.mode == "pred":
-            return out.detach() # reshape after this
+            return out[:, :-1, :].detach() # reshape after this
         #project
         out = self.proj_net(out)
         out = out.contiguous()

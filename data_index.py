@@ -168,9 +168,9 @@ def get_batch(i, dataset, mask, lens, labels, type = 0, device="cuda"):
     batch = dat[idxs][:, :max_, :]
     batch_mask = mk[idxs][:, :max_, :]
     labels = torchize(labels, device=device).long()
-    batch_labels = labels[idxs]
-    if config["categorical"]:
-        batch_labels=F.one_hot(batch_labels.view(-1), num_classes=config["label_size"])
+    batch_labels = labels[idxs].view(-1)
+    #if config["categorical"]:
+        #batch_labels=F.one_hot(batch_labels.view(-1), num_classes=config["label_size"])
     # randomly permute the train batches at the end of an epoch
     if last:
         TRAIN_PERM = permutate(TRAIN)

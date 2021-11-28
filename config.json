@@ -19,7 +19,7 @@
     "dropout": 0.0,
     "step_size": 4,
     "gamma": 0.5,
-    "loss_factor": 4,
+    "loss_factor": 30,
 
     "lr": 0.012589254117941675,
     "hidden_size": 32,
@@ -36,6 +36,6 @@
     "error_depth" : 2,
     "baseline_depth" : 6,
 
-    "checkpoint_dir_f": "gazebase_test_best.pt",
+    "checkpoint_dir_f": "gazebase_test.pt",
     "checkpoint_dir_p": "gazebase_test_pred.pt"
 }
