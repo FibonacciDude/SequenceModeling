@@ -36,7 +36,7 @@
     "proj_hidden_size": 64,
     "inside_layers" : 3,
 
-    "predictor_depth" : 4,
+    "predictor_depth" : 1,
     "error_depth" : 2,
     "baseline_depth" : 5,
 

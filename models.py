@@ -22,8 +22,7 @@ def loss_calc_x(X, Y_hat, mask, config):
 def loss_calc_y(Y, Y_hat, mask, config):
     crit = nn.CrossEntropyLoss(weight=None)
     softmax=nn.Softmax(dim=1)(Y_hat)
-    #print(softmax.argmax(1))
-    acc=(softmax.argmax(1)==Y).float().mean().item()
+    acc=(softmax.argmax(1)==Y.squeeze(0)).float().mean().item()
     loss = crit(Y_hat, Y)
     return loss, acc
 
@@ -35,7 +34,6 @@ class FeedForward(nn.Module):
         self.to(torch.device(device))
 
     def forward(self, X):
-        #print(X)
         out = self.l1(X)
         #print(self.l1(torch.rand(X.shape).cuda()))
         return out
@@ -46,6 +44,8 @@ class Predictor(nn.Module):
         self.net = FeedForward(config["predictor_hidden_size"], config["predictor_depth"], config["hidden_size"], config["label_size"])
         self.to(torch.device(device))
     def forward(self, X):
+        #X/=10
+        #print(self.net(X), "output")
         return self.net(X)
 
 class Baseline(nn.Module):
@@ -66,7 +66,7 @@ class Baseline(nn.Module):
         out = self.l1(X)
         out = self.bottleneck(out)
         if self.mode == "pred":
-            return out.detach()
+            return out.reshape(batch_size, seq_len, -1)[:, :-1, :].mean(1).detach()
         out = self.l2(out)
         out = out.reshape(batch_size, seq_len, ss, fs)
         return out
@@ -94,7 +94,7 @@ class Rnn(nn.Module):
                            num_layers=config["num_layers"], dropout=config["dropout"], batch_first=True)
         hidden=config["proj_hidden_size"]
         d=config["inside_layers"]
-        layers=[nn.ReLU(), nn.Linear(config["hidden_size"], hidden), nn.ReLU()] + [nn.Linear(hidden, hidden)]*d + [hidden, info.feature_size * config["second_split"])]
+        layers=[nn.ReLU(), nn.Linear(config["hidden_size"], hidden), nn.ReLU()] + [nn.Linear(hidden, hidden)]*d + [nn.Linear(hidden, info.feature_size * config["second_split"])]
         self.proj_net = nn.Sequential(*layers)
         self.to(torch.device(device))
         self.mode=mode

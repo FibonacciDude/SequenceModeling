@@ -41,11 +41,9 @@ def loop(f_model, pred_model, optimizer, scheduler, data_tup, TOT, type_=0, upda
 
         if predictor:
             batch=f_model(batch, lens).detach()
-            #normalize
-            #print(batch[0, :-5])
+            # is norm wrong?
             batch=(batch-mean)/std
-            #print(batch[0, :-5])
-            Y_hat=pred_model(batch) #batch.reshape(batch.size()[0], -1))
+            Y_hat=pred_model(batch)
             Y=labels
         else:
             Y_hat=f_model(batch, lens)
@@ -103,7 +101,7 @@ data_tup = (dataset, data_mask, data_lens, data_labels)
 
 print("dataset loaded...")
 
-def run():
+def run(save):
 
     predictor=config["predictor"]
     mode = "pred" if predictor else "no_pred"
@@ -111,7 +109,7 @@ def run():
 
     if predictor:
         pred_model=Predictor(config)
-        f_model.load_state_dict(torch.load("best_models/" + config["checkpoint_dir_f"]))
+        f_model.load_state_dict(torch.load("best_models/" + "%s_best_%s.pt" % (info.name, "rnn" if config["rnn"] else "baseline")))
         optimizer=optim.Adam(pred_model.parameters(), lr=config["lr"], weight_decay=config["l2_reg"])
     else:
         pred_model=None
@@ -126,71 +124,29 @@ def run():
     model = pred_model if predictor else f_model
     loss = validate(f_model, pred_model, data_tup, final=True)
     dir_type = "p" if predictor else "f"
-    torch.save(model.state_dict(), "checkpoints/" + config["checkpoint_dir_"+dir_type])
-    with open("crossval/"+config["checkpoint_dir_"+dir_type][:-2]+"txt", "w") as f:
+    torch.save(model.state_dict(), "checkpoints/"+save+".pt")
+    # config["checkpoint_dir_"+dir_type])
+    with open("crossval/"+save+".txt", "w") as f:
         f.write(str(loss))
     return loss
 
+def update(keys, params, config_dict, output=False):
+    for i, k in enumerate(keys):
+        config_dict[k] = params[i]
+        if output:
+            print("{}: {}".format(k, params[i]))
+    return config_dict
 
-if __name__ == "__main__":
 
-    # cross_validation
-    # universal ---
-    lr = np.logspace(start=-5, stop=-1, num=7)
-    l2_reg = np.logspace(start=-4, stop=-2, num=7)
+def crossval(predictor, rnn, iter_dict):
+    global config_dict, config
+    f_model_type=["baseline", "rnn"][rnn]
+    model_type=("pred" if predictor else ("rnn" if rnn else "baseline"))
 
-    # changes with conf
-    hidden_size = [32, 64, 128] # lstm
-    proj_hidden_size = [32, 64] # feedforward
-    inside_layers = [0, 1] # for feedforward in lstm
-    num_layers = [1, 2] # for lstm
-    baseline_hidden_size = [32, 64] # baseline (or error) (this should be greater than hidden_size lstm)
-    baseline_depth = [2, 4, 6] # baseline depth (or error), doesn't include bottleneck
-    predictor_hidden_size = [32, 64] # predictor
-    predictor_depth = [4, 6] # predictor
-    error_hidden_size = [32, 64] # error
-    error_depth = [4, 6] # error
-
-    iter_dict = { # or load from somewhere else
-    #"num_layers" : num_layers, 
-    #"inside_layers" : inside_layers,
-    #"baseline_hidden_size" : baseline_hidden_size,
-    #"baseline_depth" : baseline_depth,
-    #"predictor_hidden_size" : predictor_hidden_size,
-    #"predictor_depth" : predictor_depth,
-    #"error_hidden_size" : error_hidden_size,
-    #"error_depth" : error_depth,
-    #"proj_hidden_size" : proj_hidden_size, # for lstm feedforward
-    }
-    iter_dict = iter_dict.update({
-    "l2_reg" : l2_reg,
-    "lr" : lr
-    }
-    iter_dict = iter_dict.update("proj_hidden_size" : iter_dict["hidden_size"]) # if lstm
-
-    iter_arr = list(iter_dict.values())
-
-    config_dict = json.load(open("config.json"))
-    torch.manual_seed(config_dict['seed'])
-    rnn=config_dict["rnn"]
-    predictor=config_dict["predictor"]
-    epochs=config_dict["epochs"]
-    every=config_dict["print_every"]
-
-    checkpoint_append = info.name + "_" + (("predictor") if predictor else ("rnn" if rnn else "baseline"))
+    checkpoint_append = info.name + "_" + model_type
     dir_type="p" if predictor else "f"
-    x_size = info.feature_size * config_dict["second_split"]
-
-    def update(keys, params, config_dict, output=False):
-        for i, k in enumerate(keys):
-            config_dict[k] = params[i]
-            if output:
-                print("{}: {}".format(k, params[i]))
-        return config_dict
     
     val_accs = {}
-    f_model_type=("rnn" if rnn else "baseline")
-
     if predictor:
         best_idx=open("best_models/best_"+f_model_type+"_idx.txt").read()
         best_params=np.load("checkpoints/"+info.name+"_"+f_model_type+"_%s_params.npy"% best_idx)
@@ -205,26 +161,87 @@ if __name__ == "__main__":
         else:
             config_dict=update(list(iter_dict.keys()), best_params, config_dict)
         config = config_dict
-        print("dir:", config["checkpoint_dir_f"])
-
-        loss=run()  # run
+        save="%s_%s_%d" % (info.name, model_type, idx)
+        loss=run(save)  # run
         val_accs[idx]=loss
 
+    # save and get best
+    keys=np.array(list(val_accs.keys()))
+    vals=np.array(list(val_accs.values()))
+    best_idx=keys[vals.argmin()]
+    best_dir="%s_%d" % (checkpoint_append, best_idx)
+    json.dump(val_accs, open("crossval/%s_v%d" % (f_model_type, predictor), "w"))
+
+    # load std, mean of z vector to normalize (for predictor)
     if not predictor:
-        # save and get best
-        keys=np.array(list(val_accs.keys()))
-        vals=np.array(list(val_accs.values()))
-        best_idx=keys[vals.argmin()]
-        best_dir= "checkpoints/%s_%d" % (checkpoint_append, best_idx)
-        # load std, mean of z vector to normalize (for predictor)
         print("Computing and saving norm...")
         f_model= Rnn(config, mode="pred") if rnn else Baseline(config, mode="pred")
+        f_model.load_state_dict(torch.load("best_models/%s.pt" % best_dir))
         zs=f_model(dataset[data_index.TEST+data_index.VAL:], data_lens[data_index.TEST+data_index.VAL:].cpu().numpy())
         std, mean = torch.std_mean(zs, dim=0)
         norm=torch.stack((mean, std))
-        torch.save(norm, "best_models/"+f_model_type+"_norm.pt")
-
-        with open("best_models/best_%s_idx.txt"%f_model_type, "w") as f:
-            f.write(str(idx))
+        torch.save(norm, "best_models/"+model_type+"_norm.pt")
         print("Norm saved and computed")
-        os.system("cp %s.pt best_models/gazebase_test.pt" % (best_dir))
+        os.system("cp checkpoints/%s.pt best_models/%s_best_%s.pt" % (best_dir, info.name, model_type))
+        with open("best_models/best_%s_idx.txt"%model_type, "w") as f:
+            f.write(str(idx))
+    else:
+        os.system("cp checkpoints/%s.pt best_models/%s_%s_pred_best.pt" % (best_dir, info.name, f_model_type))
+        with open("best_models/best_%s_pred_idx.txt"%model_type, "w") as f:
+            f.write(str(idx))
+
+    return val_accs
+
+if __name__ == "__main__":
+
+    config_dict = json.load(open("config.json"))
+    torch.manual_seed(config_dict['seed'])
+    config=config_dict
+    x_size = info.feature_size * config_dict["second_split"]
+
+    # cross_validation
+    # universal ---
+    lr = np.logspace(start=-5, stop=-1, num=7)
+    l2_reg = np.logspace(start=-4, stop=-2, num=2)
+    cross_type=["baseline", "rnn", "pred"]
+    val_accs_comb=[]
+    config = {}
+
+    for predictor in [False, True]:
+        for rnn in [True, False]:
+            config_dict["rnn"]=rnn
+            config_dict["predictor"]=predictor
+            epochs=config_dict["epochs"]
+            every=config_dict["print_every"]
+            type_ = cross_type[rnn] if not predictor else cross_type[-1]
+            print("predictor: %s, rnn: %s, %s" % (predictor, rnn, type_))
+            #iter_dict = json.load(open("crossval_config_"+type_+".json"))
+            iter_dict={}
+            iter_dict.update({
+            "l2_reg" : l2_reg,
+            "lr" : lr
+            })
+            iter_arr = list(iter_dict.values())
+            val_accs=crossval(predictor, rnn, iter_dict)
+            val_accs_comb.append(val_accs)
+         #print("Finalized %s... Got loss:.4f%, acc:.4f%" % (loss, acc))
+
+    #for model_type in cross_type:
+        #best=int(open("best_models/best_%s_idx.txt"%model_type, "w").read())
+        #print(best)
+        
+
+    # changes with conf
+    #{# or load from somewhere else
+    #"num_layers" : num_layers, 
+    #"inside_layers" : inside_layers,
+    #"baseline_hidden_size" : baseline_hidden_size,
+    #"baseline_depth" : baseline_depth,
+    #"predictor_hidden_size" : predictor_hidden_size,
+    #"predictor_depth" : predictor_depth,
+    #"error_hidden_size" : error_hidden_size,
+    #"error_depth" : error_depth,
+    #"proj_hidden_size" : proj_hidden_size, # for lstm feedforward
+    #}
+
+
