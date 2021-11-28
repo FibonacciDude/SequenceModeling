@@ -74,7 +74,7 @@ def data_index(person, dim):
                 pads = []
             if (i-1) % (config['Hz'] // config['second_split']) == 0:
                 flag = (row[1] == 'NaN' or row[2] == 'NaN')
-                arr = np.array([0, 0, flag]) if flag else np.array([float(row[1]), float(row[2]), flag])
+                arr = np.array([1, 1, flag]) if flag else np.array([float(row[1]), float(row[2]), flag])
                 vecs.append(arr)
                 arr2 = np.array([0]*(info.feature_size-1)+[info.feature_size]) if flag else np.ones(info.feature_size)
 		# the info.feature_size instead of 1 is to rescale and give it equal "weight"
@@ -161,7 +161,6 @@ def get_batch(i, dataset, mask, lens, labels, type = 0, device="cuda"):
  
     batch_lens = lens[idxs].cpu().numpy()
     max_ = int(max(batch_lens))
-    # did this work with the VAL+TEST??? how?
     dat = dataset[start:, ...]
     mk = mask[start:, ...]
     labels = labels[start:, config['label_idx']]    # get the right label for predicting

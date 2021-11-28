@@ -11,32 +11,33 @@ def loss_calc_x(X, Y_hat, mask, config):
     X = X.reshape(batch_size, seq_len, ss*fs)
     Y_hat = Y_hat[:, :-1, :]  # 0, 1, ..., last-1
     Y = X[:, 1:, :]  # 1, 2, ..., last
-    #X = X.reshape(batch_size, seq_len, ss, fs)
     Y = Y.reshape(batch_size, seq_len-1, ss, fs)
     Y_hat = Y_hat.reshape(batch_size, seq_len-1, ss, fs)
     mask = mask[:, :-1, :, :]
     loss = (Y - Y_hat) ** 2  # mse loss
     loss = loss * mask  # mask it
     loss = loss.sum()  / mask.sum() * (ss * fs) * config["loss_factor"]
-    return loss
+    return loss, 0  # acc
 
 def loss_calc_y(Y, Y_hat, mask, config):
-    #Y_hat = Y_hat[:, :-1, :]  # 0, 1, ..., last-1
-    #Y = Y[:, 1:, :]  # 1, 2, ..., last
-    print(Y.shape, Y_hat.shape)
     crit = nn.CrossEntropyLoss(weight=None)
-    loss = crit(Y, Y_hat)
-    return loss
+    softmax=nn.Softmax(dim=1)(Y_hat)
+    #print(softmax.argmax(1))
+    acc=(softmax.argmax(1)==Y).float().mean().item()
+    loss = crit(Y_hat, Y)
+    return loss, acc
 
 class FeedForward(nn.Module):
     def __init__(self, h, d, in_, out_, device="cuda"):
         super(FeedForward, self).__init__()
         layers = [nn.Linear(in_, h), nn.ReLU()] + [nn.Linear(h, h), nn.ReLU()] * d + [nn.Linear(h, out_)]
-        self.net = nn.Sequential(*layers)
+        self.l1 = nn.Sequential(*layers)
         self.to(torch.device(device))
 
     def forward(self, X):
-        out = self.net(X)
+        #print(X)
+        out = self.l1(X)
+        #print(self.l1(torch.rand(X.shape).cuda()))
         return out
 
 class Predictor(nn.Module):
@@ -86,17 +87,15 @@ class Rnn(nn.Module):
     # add self-correcting module later as another nn.Module
     def __init__(self, config, mode="no_pred", device="cuda"):
         super(Rnn, self).__init__()
+        self.config = config
         self.x_size = info.feature_size * config["second_split"]
         # proj size = hidden size
         self.rnn = nn.LSTM(self.x_size, hidden_size=config["hidden_size"],
                            num_layers=config["num_layers"], dropout=config["dropout"], batch_first=True)
-        self.proj_net = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(config["hidden_size"], config["proj_hidden_size"]),
-            nn.ReLU(),
-            nn.Linear(config["proj_hidden_size"],
-                      info.feature_size * config["second_split"])
-        )
+        hidden=config["proj_hidden_size"]
+        d=config["inside_layers"]
+        layers=[nn.ReLU(), nn.Linear(config["hidden_size"], hidden), nn.ReLU()] + [nn.Linear(hidden, hidden)]*d + [hidden, info.feature_size * config["second_split"])]
+        self.proj_net = nn.Sequential(*layers)
         self.to(torch.device(device))
         self.mode=mode
 
@@ -104,30 +103,19 @@ class Rnn(nn.Module):
         # this forward goes through the entire length of the input and spits out all the predictions as output
         # input is NOT a padded sequence
         batch_size, seq_len, ss, fs = X.size()
-        X = X.view(batch_size, seq_len, ss*fs)
+        X = X.reshape(batch_size, seq_len, ss*fs)
         packed_X = rnn_utils.pack_padded_sequence(X, lens, batch_first=True, enforce_sorted=False)
         out, self.hidden = self.rnn(packed_X)
         #unpack
         out, _ = rnn_utils.pad_packed_sequence(out, batch_first=True)
         if self.mode == "pred":
-            return out[:, :-1, :].detach() # reshape after this
+            #out=out[:, -1, :] # give only the last z vector
+            out=out.mean(1)  # give the mean vec
+            out=out.reshape(batch_size, ss*self.config["hidden_size"])
+            return out.detach() # reshape after this
         #project
         out = self.proj_net(out)
-        out = out.contiguous()
-        out = out.view((batch_size, seq_len, -1))
-        # last prediction (can't find it's loss) is still there
+        #out = out.contiguous()
+        out = out.reshape((batch_size, seq_len, -1))
+        # last prediction (can't find its loss) is still there
         return out
-
-    def loss(self, X, Y_hat, mask):
-        batch_size, seq_len, ss, fs = X.size()
-        X = X.view(batch_size, seq_len, ss*fs)
-        Y_hat = Y_hat[:, :-1, :]  # 0, 1, ..., last-1
-        Y = X[:, 1:, :]  # 1, 2, ..., last
-        #X = X.view(batch_size, seq_len, ss, fs)
-        Y = Y.view(batch_size, seq_len-1, ss, fs)
-        Y_hat = Y_hat.view(batch_size, seq_len-1, ss, fs)
-        mask = mask[:, :-1, :, :]
-        loss = (Y - Y_hat) ** 2  # mse loss
-        loss = loss * mask  # mask it
-        loss = loss.sum()  / mask.sum() * (ss * fs) * config["loss_factor"]
-        return loss

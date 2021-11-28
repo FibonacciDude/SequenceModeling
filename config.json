@@ -5,36 +5,40 @@
     "seed": 99,
     "batch_size": 32,
 
-    "predictor" : false,
-    "rnn" : false,
+    "rnn" : true,
+    "predictor" : true,
 
     "categorical" : true,
     "label_idx" : 0,
     "label_size" : 5,
     "val": 0.1,
     "test": 0.1,
-    "epochs": 13,
-    "print_every": 20,
+
+    "epochs": 10,
+    "print_every": 10000,
     "max_norm": 1,
     "dropout": 0.0,
     "step_size": 4,
     "gamma": 0.5,
-    "loss_factor": 30,
+
+    "loss_factor": 4,
+    "data_factor" : 2,
 
     "lr": 0.012589254117941675,
-    "hidden_size": 32,
+    "hidden_size": 128,
     "l2_reg": 0.01,
     "num_layers": 2,
-    "inside_layers": 128,
-    "proj_hidden_size": 64,
-
 
     "predictor_hidden_size" : 32,
     "error_hidden_size" : 32,
+
     "baseline_hidden_size" : 32,
-    "predictor_depth" : 6,
+    "proj_hidden_size": 64,
+    "inside_layers" : 3,
+
+    "predictor_depth" : 4,
     "error_depth" : 2,
-    "baseline_depth" : 6,
+    "baseline_depth" : 5,
 
     "checkpoint_dir_f": "gazebase_test.pt",
     "checkpoint_dir_p": "gazebase_test_pred.pt"
