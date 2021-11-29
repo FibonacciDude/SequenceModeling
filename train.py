@@ -16,6 +16,7 @@ import tqdm
 from models import *
 
 info = data_index.info
+#torch.autograd.detect_anomaly()
 
 def add_noise(X):
     X[..., :-1] += torch.randn(dat.shape).cuda() / 1e2 * .5
@@ -30,8 +31,8 @@ def loop(f_model, pred_model, optimizer, scheduler, data_tup, TOT, type_=0, upda
     if predictor:
         norm=torch.load("best_models/"+("rnn" if config["rnn"] else "baseline") + "_norm.pt")
         mean,std=norm
-        mean=mean[None, :]
-        std=std[None, :]
+        #mean=mean[None, :]
+        #std=std[None, :]
 
     for batch_idx in range(TOT):
         batch, mask, lens, labels  = get_batch(
@@ -82,15 +83,14 @@ def validate(f_model, pred_model, data_tup, final=False):
         print("\tMean validation loss:", losses.sum() / data_index.VAL)
         if config["predictor"]:
             print("\tMean acc:", accs.sum() / data_index.VAL)
-    return losses.sum() / data_index.VAL
-
+    return (losses.sum() / data_index.VAL) if not config["predictor"] else (accs.sum() / data_index.VAL)
 
 # load dataset
 print("loading dataset...")
 dataset = torch.load("data/dataset.pt")
 # scale input, too small
-data_factor = 2 # not in config!
-dataset *= data_factor # this is arbitrary
+#data_factor = 2 # not in config!
+#dataset *= data_factor # this is arbitrary
 data_mask = torch.load("data/data_mask.pt")
 # take out the mask for the None loss
 data_mask[..., :-1] = 0
@@ -110,7 +110,7 @@ def run(save):
     if predictor:
         pred_model=Predictor(config)
         f_model.load_state_dict(torch.load("best_models/" + "%s_best_%s.pt" % (info.name, "rnn" if config["rnn"] else "baseline")))
-        optimizer=optim.Adam(pred_model.parameters(), lr=config["lr"], weight_decay=config["l2_reg"])
+        optimizer=optim.Adam(pred_model.parameters(), lr=config["lr"], weight_decay=config["l2_reg"], eps=1e-6)
     else:
         pred_model=None
         optimizer=optim.Adam(f_model.parameters(), lr=config["lr"], weight_decay=config["l2_reg"])
@@ -138,7 +138,7 @@ def update(keys, params, config_dict, output=False):
     return config_dict
 
 
-def crossval(predictor, rnn, iter_dict):
+def crossval(predictor, rnn, iter_dict, skip=False):
     global config_dict, config
     f_model_type=["baseline", "rnn"][rnn]
     model_type=("pred" if predictor else ("rnn" if rnn else "baseline"))
@@ -151,44 +151,61 @@ def crossval(predictor, rnn, iter_dict):
         best_idx=open("best_models/best_"+f_model_type+"_idx.txt").read()
         best_params=np.load("checkpoints/"+info.name+"_"+f_model_type+"_%s_params.npy"% best_idx)
     
-    for idx, params in enumerate(itertools.product(*iter_arr)):
-        print("Currently:")
-        config_dict=update(list(iter_dict.keys()), params, config_dict, output=True)
-        config_dict["checkpoint_dir_"+dir_type] = checkpoint_append + "_%d.pt" % idx
-        # add params to checkpoint
-        if not predictor:
-            np.save("checkpoints/"+checkpoint_append+"_%d_params.npy" % idx, np.array(params))
-        else:
-            config_dict=update(list(iter_dict.keys()), best_params, config_dict)
-        config = config_dict
-        save="%s_%s_%d" % (info.name, model_type, idx)
-        loss=run(save)  # run
-        val_accs[idx]=loss
+    if not skip:
+        for idx, params in enumerate(itertools.product(*iter_arr)):
+            print("Currently:")
+            #params[:-2]=np.array(params[:-2], dtype=np.int64)
+            params=np.array(params)
+            config_dict=update(list(iter_dict.keys()), params, config_dict, output=True)
+            config_dict["checkpoint_dir_"+dir_type] = checkpoint_append + "_%d.pt" % idx
+            # add params to checkpoint
+            if not predictor:
+                np.save("checkpoints/"+checkpoint_append+"_%d_params.npy" % idx, params)
+            else:
+                config_dict=update(list(iter_dict.keys()), best_params, config_dict)
+            config = config_dict
+            save="%s_%s_%d" % (info.name, model_type, idx)
+            loss=run(save)  # run
+            val_accs[idx]=loss
 
-    # save and get best
-    keys=np.array(list(val_accs.keys()))
-    vals=np.array(list(val_accs.values()))
-    best_idx=keys[vals.argmin()]
-    best_dir="%s_%d" % (checkpoint_append, best_idx)
-    json.dump(val_accs, open("crossval/%s_v%d" % (f_model_type, predictor), "w"))
+        # save and get best
+        keys=np.array(list(val_accs.keys()))
+        vals=np.array(list(val_accs.values()))
+        best_idx=keys[vals.argmin()]
+        best_dir="%s_%d" % (checkpoint_append, best_idx)
+        json.dump(val_accs, open("crossval/%s_v%d.json" % (f_model_type, predictor), "w"))
+
+    if skip:
+    #if we skipped
+        val_accs = json.load(open("crossval/%s_v%d.json" % (f_model_type, predictor))) # just in case we skipped
+        keys=np.array(list(val_accs.keys()))
+        vals=np.array(list(val_accs.values()))
+        best_idx=int(keys[vals.argmin()])
+        best_dir="%s_%d" % (checkpoint_append, best_idx)
+        best_params=np.load("checkpoints/"+info.name+"_"+f_model_type+"_%s_params.npy"% best_idx)
+        config_dict=update(list(iter_dict.keys()), best_params, config_dict)
+        config = config_dict
 
     # load std, mean of z vector to normalize (for predictor)
     if not predictor:
+        # save model
+        os.system("cp checkpoints/%s.pt best_models/%s_best_%s.pt" % (best_dir, info.name, model_type))
         print("Computing and saving norm...")
         f_model= Rnn(config, mode="pred") if rnn else Baseline(config, mode="pred")
-        f_model.load_state_dict(torch.load("best_models/%s.pt" % best_dir))
+        f_model.load_state_dict(torch.load("best_models/%s_best_%s.pt" % (info.name, model_type)))
         zs=f_model(dataset[data_index.TEST+data_index.VAL:], data_lens[data_index.TEST+data_index.VAL:].cpu().numpy())
         std, mean = torch.std_mean(zs, dim=0)
+        #mean, std = zs.min(), (zs.max()-zs.min())
+        #print(zs.min(), zs.max())
         norm=torch.stack((mean, std))
         torch.save(norm, "best_models/"+model_type+"_norm.pt")
         print("Norm saved and computed")
-        os.system("cp checkpoints/%s.pt best_models/%s_best_%s.pt" % (best_dir, info.name, model_type))
         with open("best_models/best_%s_idx.txt"%model_type, "w") as f:
-            f.write(str(idx))
+            f.write(str(best_idx))
     else:
         os.system("cp checkpoints/%s.pt best_models/%s_%s_pred_best.pt" % (best_dir, info.name, f_model_type))
         with open("best_models/best_%s_pred_idx.txt"%model_type, "w") as f:
-            f.write(str(idx))
+            f.write(str(best_idx))
 
     return val_accs
 
@@ -208,21 +225,24 @@ if __name__ == "__main__":
     config = {}
 
     for predictor in [False, True]:
+        if predictor:
+            l2_reg[0]=1e-3
         for rnn in [True, False]:
             config_dict["rnn"]=rnn
             config_dict["predictor"]=predictor
+            config_dict["seed"]=123 if predictor else config_dict["seed"]
             epochs=config_dict["epochs"]
             every=config_dict["print_every"]
             type_ = cross_type[rnn] if not predictor else cross_type[-1]
             print("predictor: %s, rnn: %s, %s" % (predictor, rnn, type_))
-            #iter_dict = json.load(open("crossval_config_"+type_+".json"))
-            iter_dict={}
+            iter_dict = json.load(open("crossval_config_"+type_+".json"))
             iter_dict.update({
             "l2_reg" : l2_reg,
             "lr" : lr
             })
             iter_arr = list(iter_dict.values())
-            val_accs=crossval(predictor, rnn, iter_dict)
+            skip = not predictor or rnn
+            val_accs=crossval(predictor, rnn, iter_dict, skip=skip)
             val_accs_comb.append(val_accs)
          #print("Finalized %s... Got loss:.4f%, acc:.4f%" % (loss, acc))
 

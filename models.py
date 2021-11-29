@@ -21,9 +21,11 @@ def loss_calc_x(X, Y_hat, mask, config):
 
 def loss_calc_y(Y, Y_hat, mask, config):
     crit = nn.CrossEntropyLoss(weight=None)
-    softmax=nn.Softmax(dim=1)(Y_hat)
-    acc=(softmax.argmax(1)==Y.squeeze(0)).float().mean().item()
+    logsoftmax=nn.LogSoftmax(dim=1)(Y_hat)
+    acc=(logsoftmax.argmax(1)==Y.squeeze(0)).float().mean().item()
     loss = crit(Y_hat, Y)
+    #print(softmax)
+    #print(loss, acc)
     return loss, acc
 
 class FeedForward(nn.Module):
@@ -35,28 +37,31 @@ class FeedForward(nn.Module):
 
     def forward(self, X):
         out = self.l1(X)
+        #print(out.norm())
         #print(self.l1(torch.rand(X.shape).cuda()))
         return out
 
 class Predictor(nn.Module):
     def __init__(self, config, device="cuda"):
         super(Predictor, self).__init__()
-        self.net = FeedForward(config["predictor_hidden_size"], config["predictor_depth"], config["hidden_size"], config["label_size"])
+        self.net = FeedForward(int(config["predictor_hidden_size"]), int(config["predictor_depth"]), int(config["hidden_size"]), int(config["label_size"]))
         self.to(torch.device(device))
     def forward(self, X):
-        #X/=10
-        #print(self.net(X), "output")
-        return self.net(X)
+        out=self.net(X)
+        #out=nn.Sigmoid()(out)
+        #print(torch.isnan(out).any())
+        #print((X/2).mean(), (X/2).std())
+        return out
 
 class Baseline(nn.Module):
     def __init__(self, config, mode="no_pred", device="cuda"):
         super(Baseline, self).__init__()
-        bhs = config["baseline_hidden_size"]
+        bhs = int(config["baseline_hidden_size"])
         self.x_size=info.feature_size*config["second_split"]
-        self.l1 = FeedForward(bhs, config["baseline_depth"], self.x_size, bhs)
-        btl = [nn.ReLU(), nn.Linear(bhs, config["hidden_size"])]
+        self.l1 = FeedForward(bhs, int(config["baseline_depth"]), self.x_size, bhs)
+        btl = [nn.ReLU(), nn.Linear(bhs, int(config["hidden_size"]))]
         self.bottleneck = nn.Sequential(*btl)
-        self.l2 = nn.Sequential(nn.Linear(config["hidden_size"], self.x_size))
+        self.l2 = nn.Sequential(nn.Linear(int(config["hidden_size"]), self.x_size))
         self.to(torch.device(device))
         self.mode=mode
 
@@ -74,7 +79,7 @@ class Baseline(nn.Module):
 class Error(nn.Module):
     def __init__(self, config, device="cuda"):
         super(Baseline, self).__init__()
-        self.net = FeedForward(config["error_hidden_size"], config["error_depth"], x_size, info.feature_size)
+        self.net = FeedForward(int(config["error_hidden_size"]), int(config["error_depth"]), x_size, info.feature_size)
         self.to(torch.device(device))
     def forward(self, X, lens):
         batch_size, seq_len, ss, fs = X.size()
@@ -88,13 +93,13 @@ class Rnn(nn.Module):
     def __init__(self, config, mode="no_pred", device="cuda"):
         super(Rnn, self).__init__()
         self.config = config
-        self.x_size = info.feature_size * config["second_split"]
+        self.x_size = info.feature_size * int(config["second_split"])
         # proj size = hidden size
-        self.rnn = nn.LSTM(self.x_size, hidden_size=config["hidden_size"],
-                           num_layers=config["num_layers"], dropout=config["dropout"], batch_first=True)
-        hidden=config["proj_hidden_size"]
-        d=config["inside_layers"]
-        layers=[nn.ReLU(), nn.Linear(config["hidden_size"], hidden), nn.ReLU()] + [nn.Linear(hidden, hidden)]*d + [nn.Linear(hidden, info.feature_size * config["second_split"])]
+        self.rnn = nn.LSTM(self.x_size, hidden_size=int(config["hidden_size"]),
+                           num_layers=int(config["num_layers"]), dropout=config["dropout"], batch_first=True)
+        hidden=int(config["proj_hidden_size"])
+        d=int(config["inside_layers"])
+        layers=[nn.ReLU(), nn.Linear(int(config["hidden_size"]), hidden), nn.ReLU()] + [nn.Linear(hidden, hidden)]*d + [nn.Linear(hidden, info.feature_size * int(config["second_split"]))]
         self.proj_net = nn.Sequential(*layers)
         self.to(torch.device(device))
         self.mode=mode
@@ -111,7 +116,7 @@ class Rnn(nn.Module):
         if self.mode == "pred":
             #out=out[:, -1, :] # give only the last z vector
             out=out.mean(1)  # give the mean vec
-            out=out.reshape(batch_size, ss*self.config["hidden_size"])
+            out=out.reshape(batch_size, ss*int(self.config["hidden_size"]))
             return out.detach() # reshape after this
         #project
         out = self.proj_net(out)
