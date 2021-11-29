@@ -1,4 +1,4 @@
 {
     "baseline_hidden_size" : [32, 64],
-    "baseline_depth" : [2, 4],
+    "baseline_depth" : [2, 4]
 }

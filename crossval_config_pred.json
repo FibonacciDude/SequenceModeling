@@ -1,4 +1,4 @@
 {
-    "predictor_hidden_size" : [16, 32, 64],
-    "predictor_depth" : [2, 4, 6]
+    "predictor_hidden_size" : [32, 64, 128],
+    "predictor_depth" : [4, 6, 8]
 }
